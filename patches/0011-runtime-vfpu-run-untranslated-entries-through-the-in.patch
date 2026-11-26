@@ -1,0 +1,173 @@
+From a6aa73967832e51201b2708f78610255151336ad Mon Sep 17 00:00:00 2001
+From: Felipe Negri <felipe.negri43@gmail.com>
+Date: Thu, 26 Nov 2026 19:04:05 -0300
+Subject: [PATCH] runtime, vfpu: run untranslated entries through the
+ interpreter; vcrs and vdet
+
+A jump into a translation unit at a PC that is not one of its entries
+(static constructors in Dante's Inferno sit in .data and are only reached
+through the constructor table) used to stop with "invalid internal
+function entry". The unit now hands it to the missing-code handler, which
+the web profile points at the interpreter.
+
+Also decode and lower vcrs.t (half cross product) and vdet.p.
+---
+ include/psprecomp/allegrex_context.hpp | 24 ++++++++++++++++++++++++
+ include/psprecomp/decoder.hpp          |  2 +-
+ include/psprecomp/runtime.hpp          |  4 ++++
+ src/decoder.cpp                        |  6 ++++++
+ src/interpreter.cpp                    |  2 ++
+ src/runtime.cpp                        |  5 +++++
+ tools/codegen_main.cpp                 | 13 +++++++++++--
+ 7 files changed, 53 insertions(+), 3 deletions(-)
+
+diff --git a/include/psprecomp/allegrex_context.hpp b/include/psprecomp/allegrex_context.hpp
+index 4a63278..e5c74d8 100644
+--- a/include/psprecomp/allegrex_context.hpp
++++ b/include/psprecomp/allegrex_context.hpp
+@@ -836,6 +836,30 @@ struct alignas(16) AllegrexContext {
+         return std::bit_cast<std::uint32_t>(selected);
+     }
+ 
++    // VCRS.T is the half cross product (s.y*t.z, s.z*t.x, s.x*t.y); VDET.P
++    // the 2x2 determinant s.x*t.y - s.y*t.x.  Both read prefixed sources.
++    void execute_vfpu_vcrs(std::uint32_t destination_register, std::uint32_t source_register,
++                           std::uint32_t target_register) noexcept {
++        float source[4]{}, target[4]{};
++        read_vfpu_vector(source, source_register, 3u);
++        read_vfpu_vector(target, target_register, 3u);
++        apply_vfpu_source_prefix(source, 3u, 0u);
++        apply_vfpu_source_prefix(target, 3u, 1u);
++        const float result[4]{source[1] * target[2], source[2] * target[0], source[0] * target[1], 0.0f};
++        write_vfpu_vector_with_destination_prefix(result, destination_register, 3u);
++    }
++
++    void execute_vfpu_vdet(std::uint32_t destination_scalar_register, std::uint32_t source_register,
++                           std::uint32_t target_register) noexcept {
++        float source[4]{}, target[4]{};
++        read_vfpu_vector(source, source_register, 2u);
++        read_vfpu_vector(target, target_register, 2u);
++        apply_vfpu_source_prefix(source, 2u, 0u);
++        apply_vfpu_source_prefix(target, 2u, 1u);
++        const float result[1]{source[0] * target[1] - source[1] * target[0]};
++        write_vfpu_vector_with_destination_prefix(result, destination_scalar_register, 1u);
++    }
++
+     void execute_vfpu_cross_quat(std::uint32_t destination_register,
+                                  std::uint32_t source_register, std::uint32_t target_register,
+                                  std::uint32_t length) noexcept {
+diff --git a/include/psprecomp/decoder.hpp b/include/psprecomp/decoder.hpp
+index 2a896d0..c902366 100644
+--- a/include/psprecomp/decoder.hpp
++++ b/include/psprecomp/decoder.hpp
+@@ -18,7 +18,7 @@ enum class OpcodeKind {
+     AddS, SubS, MulS, DivS, SqrtS, AbsS, MovS, NegS,
+     RoundWS, TruncWS, CeilWS, FloorWS, CvtWS, CvtSW, FpuCompare,
+     Bc1f, Bc1t, Bc1fl, Bc1tl, Bvf, Bvt, Bvfl, Bvtl,
+-    Mfv, Mtv, Vpfx, Viim, Vfim, Vh2f, Vf2h, Vf2i, Vi2f, Vx2i, VmidT, Vmmov, VfpuMatrixInit, Vidt, Vcst, Vocp, VfpuHorizontal, Vrot, Vtfm, VfpuVectorInit, VfpuVec3, Vscl, Vdot, Vhdp, Vcmp, Vminmax, VfpuCompare3, Vcmov, VfpuUnary, Vmmul, Vmscl, VcrossQuat, Lvs, Svs, Lvq, Svq,
++    Mfv, Mtv, Vpfx, Viim, Vfim, Vh2f, Vf2h, Vf2i, Vi2f, Vx2i, VmidT, Vmmov, VfpuMatrixInit, Vidt, Vcst, Vocp, VfpuHorizontal, Vrot, Vtfm, VfpuVectorInit, VfpuVec3, Vscl, Vdot, Vhdp, Vcrs, Vdet, Vcmp, Vminmax, VfpuCompare3, Vcmov, VfpuUnary, Vmmul, Vmscl, VcrossQuat, Lvs, Svs, Lvq, Svq,
+     Syscall,
+     Vflush,
+     Vfpu,
+diff --git a/include/psprecomp/runtime.hpp b/include/psprecomp/runtime.hpp
+index 7a51c91..15296a7 100644
+--- a/include/psprecomp/runtime.hpp
++++ b/include/psprecomp/runtime.hpp
+@@ -98,6 +98,10 @@ public:
+     [[nodiscard]] const std::string &stop_reason() const noexcept;
+ 
+     void unsupported(std::uint32_t pc, std::uint32_t instruction, const std::string &reason);
++    // A unit was entered at a PC that is not one of its entries (code only
++    // reached through a pointer the analysis never saw): hand it to the
++    // missing-code handler, or stop when none is installed.
++    void enter_untranslated(AllegrexContext &ctx);
+     void arithmetic_overflow(std::uint32_t pc, std::uint32_t instruction);
+     void invoke_import(std::string_view library, std::uint32_t nid, AllegrexContext &ctx);
+     // Generated import wrappers have a stable numeric slot. Resolve the
+diff --git a/src/decoder.cpp b/src/decoder.cpp
+index 9a771bf..794c00f 100644
+--- a/src/decoder.cpp
++++ b/src/decoder.cpp
+@@ -243,6 +243,12 @@ DecodedInstruction decode_allegrex(std::uint32_t word) {
+         } else if (operation == 4u) {
+             d.kind = OpcodeKind::Vhdp;
+             d.mnemonic = "vhdp";
++        } else if (operation == 5u) {
++            d.kind = OpcodeKind::Vcrs;
++            d.mnemonic = "vcrs";
++        } else if (operation == 6u) {
++            d.kind = OpcodeKind::Vdet;
++            d.mnemonic = "vdet";
+         } else {
+             d.kind = OpcodeKind::Vfpu;
+             d.mnemonic = "vfpu1";
+diff --git a/src/interpreter.cpp b/src/interpreter.cpp
+index efc08c2..87d3798 100644
+--- a/src/interpreter.cpp
++++ b/src/interpreter.cpp
+@@ -508,6 +508,8 @@ bool execute(Runtime &rt, AllegrexContext &ctx, const DecodedInstruction &d, std
+     }
+     case K::Vdot: ctx.execute_vfpu_vdot(vd, vs, vt, length); break;
+     case K::Vhdp: ctx.execute_vfpu_vhdp(vd, vs, vt, length); break;
++    case K::Vcrs: ctx.execute_vfpu_vcrs(vd, vs, vt); break;
++    case K::Vdet: ctx.execute_vfpu_vdet(vd, vs, vt); break;
+     case K::VcrossQuat: ctx.execute_vfpu_cross_quat(vd, vs, vt, length); break;
+     case K::Vminmax: ctx.execute_vfpu_vminmax(vd, vs, vt, length, ((w >> 23u) & 7u) == 3u); break;
+     case K::VfpuCompare3: ctx.execute_vfpu_compare3(vd, vs, vt, length, (w >> 23u) & 7u); break;
+diff --git a/src/runtime.cpp b/src/runtime.cpp
+index 99778b3..35cee1e 100644
+--- a/src/runtime.cpp
++++ b/src/runtime.cpp
+@@ -1128,6 +1128,11 @@ void Runtime::unsupported(std::uint32_t pc, std::uint32_t instruction, const std
+     stop("Unsupported Allegrex instruction " + hex32(instruction) + " at " + hex32(pc) + ": " + reason);
+ }
+ 
++void Runtime::enter_untranslated(AllegrexContext &ctx) {
++    if (g_missing_code_handler != nullptr) g_missing_code_handler(*this, ctx);
++    else unsupported(ctx.pc, 0u, "invalid internal function entry");
++}
++
+ void Runtime::arithmetic_overflow(std::uint32_t pc, std::uint32_t instruction) {
+     stop("Allegrex arithmetic overflow for " + hex32(instruction) + " at " + hex32(pc));
+ }
+diff --git a/tools/codegen_main.cpp b/tools/codegen_main.cpp
+index 93e6d66..2497407 100644
+--- a/tools/codegen_main.cpp
++++ b/tools/codegen_main.cpp
+@@ -616,6 +616,15 @@ std::string emit_regular(const psprecomp::DecodedInstruction &d, std::uint32_t p
+             << target << "u, " << length << "u);\n";
+         break;
+     }
++    case psprecomp::OpcodeKind::Vcrs:
++    case psprecomp::OpcodeKind::Vdet: {
++        const std::uint32_t destination = d.word & 0x7Fu;
++        const std::uint32_t source = (d.word >> 8u) & 0x7Fu;
++        const std::uint32_t target = (d.word >> 16u) & 0x7Fu;
++        out << "    ctx.execute_vfpu_" << (d.kind == psprecomp::OpcodeKind::Vcrs ? "vcrs(" : "vdet(")
++            << destination << "u, " << source << "u, " << target << "u);\n";
++        break;
++    }
+     case psprecomp::OpcodeKind::VcrossQuat: {
+         const std::uint32_t size_code = ((d.word >> 7u) & 1u) | (((d.word >> 15u) & 1u) << 1u);
+         const std::uint32_t length = size_code + 1u;
+@@ -1043,7 +1052,7 @@ std::string emit_function_source(const GeneratedFunctionInput &function,
+                  << psprecomp::hex32(label).substr(2) << ";\n";
+         }
+         body << "    default:\n"
+-             << "        if (local_transfers == 0u) rt.unsupported(ctx.pc, 0u, \"invalid internal function entry\");\n"
++             << "        if (local_transfers == 0u) rt.enter_untranslated(ctx);\n"
+              // Local transfers advance local_pc without touching AllegrexContext.
+              // Leaving the unit through this default arm hands control back to the
+              // outer dispatcher, for which ctx.pc is the only statement of where to
+@@ -1067,7 +1076,7 @@ std::string emit_function_source(const GeneratedFunctionInput &function,
+                  << psprecomp::hex32(label).substr(2) << ";\n";
+         }
+         body << "    default:\n"
+-             << "        if (local_transfers == 0u) rt.unsupported(ctx.pc, 0u, \"invalid internal function entry\");\n"
++             << "        if (local_transfers == 0u) rt.enter_untranslated(ctx);\n"
+              // Local transfers advance local_pc without touching AllegrexContext.
+              // Leaving the unit through this default arm hands control back to the
+              // outer dispatcher, for which ctx.pc is the only statement of where to
+-- 
+2.56.1
+

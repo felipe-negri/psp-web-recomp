@@ -98,6 +98,18 @@ std::string lbn_key(std::string relative) {
 }
 } // namespace
 
+void Kernel::load_disc_lbns(const std::filesystem::path &listing) {
+    std::ifstream in(listing);
+    std::uint32_t lbn = 0u;
+    std::uint64_t size = 0u;
+    std::string path;
+    while (in >> lbn >> size && std::getline(in >> std::ws, path)) {
+        lbn_by_path_[lbn_key(path)] = lbn;
+        path_by_lbn_[lbn] = {path, size};
+        next_lbn_ = std::max(next_lbn_, lbn + static_cast<std::uint32_t>((size + 2047u) / 2048u) + 1u);
+    }
+}
+
 std::uint32_t Kernel::disc_lbn(const std::string &relative, std::uint64_t size) {
     const std::string key = lbn_key(relative);
     if (const auto it = lbn_by_path_.find(key); it != lbn_by_path_.end()) return it->second;

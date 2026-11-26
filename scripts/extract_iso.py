@@ -53,6 +53,10 @@ for path, lba, size in sorted(files, key=lambda e: e[1]):
         while left:
             chunk = f.read(min(left, 1 << 20)); o.write(chunk); left -= len(chunk)
     total += size
+# Real sector of every file, for games that open disc0:/sce_lbn<n>_size<m> from their own tables.
+with open(os.path.join(os.path.dirname(os.path.abspath(out)), 'disc.lbn'), 'w') as o:
+    for path, lba, size in sorted(files, key=lambda e: e[1]):
+        o.write(f'{lba} {size} {path}\n')
 if temporary:
     f.close()
     os.remove(temporary)

@@ -125,6 +125,15 @@ struct FixedPool {
     std::vector<bool> used;
 };
 
+struct VariablePool {
+    std::string name;
+    std::uint32_t attr{};
+    std::uint32_t base{};
+    std::uint32_t size{};
+    std::int32_t memory_block{-1};
+    std::map<std::uint32_t, std::uint32_t> used; // address -> size
+};
+
 struct LoadedModule {
     std::string path;          // disc path relative to the disc root
     std::string name;          // from its module info
@@ -205,6 +214,9 @@ public:
 
     // Host directories that disc0:/umd0: and ms0: resolve to.
     void set_roots(std::filesystem::path disc_root, std::filesystem::path memstick_root);
+    // Real ISO sector numbers ("<lbn> <path>" per line) for games that open
+    // files as disc0:/sce_lbn<n>_size<m> from their own tables.
+    void load_disc_lbns(const std::filesystem::path &listing);
     void set_flash_root(std::filesystem::path flash_root) { flash_root_ = std::move(flash_root); }
     // Marks a guest range (the loaded module image) as allocated.
     void reserve(std::uint32_t address, std::uint32_t size, std::string name);
@@ -493,6 +505,16 @@ private:
     void sceKernelAllocateFpl(Ctx &ctx);
     void sceKernelFreeFpl(Ctx &ctx);
     void sceKernelTryAllocateFpl(Ctx &ctx);
+    void sceKernelCreateVpl(Ctx &ctx);
+    void sceKernelDeleteVpl(Ctx &ctx);
+    void sceKernelAllocateVpl(Ctx &ctx);
+    void sceKernelTryAllocateVpl(Ctx &ctx);
+    void sceKernelFreeVpl(Ctx &ctx);
+    void sceKernelReferVplStatus(Ctx &ctx);
+    void sceKernelReferSystemStatus(Ctx &ctx);
+    void sceDmacMemcpy(Ctx &ctx);
+    void scePowerGetCpuClockFrequencyInt(Ctx &ctx);
+    std::uint32_t vpl_allocate(VariablePool &pool, std::uint32_t size);
     void sceKernelReferThreadStatus(Ctx &ctx);
     void sceKernelReferEventFlagStatus(Ctx &ctx);
     void sceKernelLibcClock(Ctx &ctx);
@@ -514,6 +536,7 @@ private:
     std::map<std::int32_t, OpenDirectory> directories_;
     std::map<std::int32_t, LoadedModule> modules_;
     std::map<std::int32_t, FixedPool> fpls_;
+    std::map<std::int32_t, VariablePool> vpls_;
     std::map<std::int32_t, Mutex> mutexes_;
     std::map<std::int32_t, Mailbox> mailboxes_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, SubInterrupt> sub_interrupts_; // (interrupt, sub) -> handler

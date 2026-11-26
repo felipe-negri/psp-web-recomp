@@ -54,6 +54,7 @@ echo "== [4/5] bundle"
 mkdir -p "$game/root/ms0" "$game/preload/ms0"
 python3 -I "$here/manifest.py" "$disc" "$game/root/disc.manifest"
 cp "$game/root/EBOOT.BIN" "$game/root/disc.manifest" "$game/preload/"
+[ -f "$game/root/disc.lbn" ] && cp "$game/root/disc.lbn" "$game/preload/"
 if grep -q sceLibFont "$ROOT/profile/generated/$name/generated_registry.cpp" && [ ! -d "$game/root/flash0/font" ]; then
   fonts="${PSP_FONT_DIR:-}"
   psar="${PSP_PSAR_DECRYPT:-$ROOT/tools/pspdecrypt/pspdecrypt}"

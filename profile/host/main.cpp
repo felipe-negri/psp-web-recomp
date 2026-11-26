@@ -81,12 +81,16 @@ bool start_session(const std::string &module_path, const std::string &disc_root,
     }
     const auto imports = elf.scan_imports(rt.memory(), *module);
 
-    std::uint32_t image_end = load_base;
+    // A fixed-address executable (Dante's Inferno sits at 0x08900000) leaves the
+    // space below its first segment free, as the PSP's loader does.
+    std::uint32_t image_start = 0xFFFFFFFFu, image_end = load_base;
     for (std::size_t i = 0; i < elf.segments().size(); ++i) {
         const auto &segment = elf.segments()[i];
         if (segment.type != 1u) continue;
+        image_start = std::min(image_start, elf.segment_runtime_address(i, load_base));
         image_end = std::max(image_end, elf.segment_runtime_address(i, load_base) + segment.memory_size);
     }
+    if (image_start < load_base || image_start >= image_end) image_start = load_base;
 
     psprecomp::register_generated_functions(rt);
     psprecomp::register_dynamic_code();
@@ -96,9 +100,10 @@ bool start_session(const std::string &module_path, const std::string &disc_root,
     psprecomp::set_dynamic_code_capture(&capture_dynamic_code);
 #endif
     s.kernel = std::make_unique<pspweb::Kernel>(rt);
-    s.kernel->reserve(load_base, image_end - load_base, "module:" + module->name);
+    s.kernel->reserve(image_start, image_end - image_start, "module:" + module->name);
     s.kernel->set_roots(disc_root, memstick_root);
     s.kernel->set_flash_root(std::filesystem::path(module_path).parent_path() / "flash0");
+    s.kernel->load_disc_lbns(std::filesystem::path(module_path).parent_path() / "disc.lbn");
     if (!manifest.empty() && !s.kernel->enable_webfs(manifest, data_url))
         std::cerr << "[pspweb] no disc manifest at " << manifest << ", using local files\n";
     s.kernel->add_main_module(*module, load_base, image_end - load_base);

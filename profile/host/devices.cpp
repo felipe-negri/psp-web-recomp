@@ -97,6 +97,15 @@ void Kernel::install_devices() {
     hle(tm, 0xD979E9BFu, "sceKernelAllocateFpl", &Kernel::sceKernelAllocateFpl);
     hle(tm, 0xF6414A71u, "sceKernelFreeFpl", &Kernel::sceKernelFreeFpl);
     hle(tm, 0x623AE665u, "sceKernelTryAllocateFpl", &Kernel::sceKernelTryAllocateFpl);
+    hle(tm, 0x56C039B5u, "sceKernelCreateVpl", &Kernel::sceKernelCreateVpl);
+    hle(tm, 0x89B3D48Cu, "sceKernelDeleteVpl", &Kernel::sceKernelDeleteVpl);
+    hle(tm, 0xBED27435u, "sceKernelAllocateVpl", &Kernel::sceKernelAllocateVpl);
+    hle(tm, 0xEC0A693Fu, "sceKernelAllocateVplCB", &Kernel::sceKernelAllocateVpl);
+    hle(tm, 0xAF36D708u, "sceKernelTryAllocateVpl", &Kernel::sceKernelTryAllocateVpl);
+    hle(tm, 0xB736E9FFu, "sceKernelFreeVpl", &Kernel::sceKernelFreeVpl);
+    hle(tm, 0x39810265u, "sceKernelReferVplStatus", &Kernel::sceKernelReferVplStatus);
+    hle(tm, 0x627E6F3Au, "sceKernelReferSystemStatus", &Kernel::sceKernelReferSystemStatus);
+    hle("sceDmac", 0x617F3FE6u, "sceDmacMemcpy", &Kernel::sceDmacMemcpy);
     hle(tm, 0x17C1684Eu, "sceKernelReferThreadStatus", &Kernel::sceKernelReferThreadStatus);
     hle(tm, 0xA66B0120u, "sceKernelReferEventFlagStatus", &Kernel::sceKernelReferEventFlagStatus);
     hle(tm, 0x3AD58B8Cu, "sceKernelSuspendDispatchThread", &Kernel::return_one);
@@ -119,6 +128,7 @@ void Kernel::install_devices() {
     hle("IoFileMgrForUser", 0x06A70004u, "sceIoMkdir", &Kernel::return_zero);
     hle("scePower", 0xEBD177D6u, "scePowerSetClockFrequency", &Kernel::return_zero);
     hle("scePower", 0x469989ADu, "scePowerSetClockFrequency2", &Kernel::return_zero);
+    hle("scePower", 0xFDB5BFE9u, "scePowerGetCpuClockFrequencyInt", &Kernel::scePowerGetCpuClockFrequencyInt);
     // Firmware modules are all high-level emulated, so loading one is a no-op.
     hle("sceUtility", 0x2A2B3DE0u, "sceUtilityLoadModule", &Kernel::return_zero);
     hle("sceUtility", 0xE49BFE92u, "sceUtilityUnloadModule", &Kernel::return_zero);
@@ -552,7 +562,111 @@ void Kernel::sceKernelFreeFpl(Ctx &ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Variable-size memory pools
+
+void Kernel::sceKernelCreateVpl(Ctx &ctx) {
+    VariablePool pool;
+    pool.name = read_string(ctx.gpr[4], 32);
+    pool.attr = ctx.gpr[6];
+    pool.size = align_up(std::max(ctx.gpr[7], 8u), 8u);
+    pool.memory_block = allocate("vpl:" + pool.name, (pool.attr & 0x4000u) != 0u ? 1u : 0u, pool.size, 0u);
+    if (pool.memory_block < 0) {
+        finish(ctx, kErrorNoMemory);
+        return;
+    }
+    pool.base = blocks_.at(pool.memory_block).address;
+    const std::int32_t uid = new_uid();
+    vpls_[uid] = std::move(pool);
+    finish(ctx, static_cast<std::uint32_t>(uid));
+}
+
+void Kernel::sceKernelDeleteVpl(Ctx &ctx) {
+    const auto it = vpls_.find(static_cast<std::int32_t>(ctx.gpr[4]));
+    if (it == vpls_.end()) {
+        finish(ctx, kErrorUnknownUid);
+        return;
+    }
+    blocks_.erase(it->second.memory_block);
+    vpls_.erase(it);
+    finish(ctx, 0u);
+}
+
+// First fit, 8-byte granules; returns 0 when nothing fits.
+std::uint32_t Kernel::vpl_allocate(VariablePool &pool, std::uint32_t size) {
+    size = align_up(std::max(size, 1u), 8u);
+    std::uint32_t cursor = pool.base;
+    const std::uint32_t end = pool.base + pool.size;
+    for (const auto &[address, length] : pool.used) {
+        if (address - cursor >= size) break;
+        cursor = address + length;
+    }
+    if (cursor > end || end - cursor < size) return 0u;
+    pool.used[cursor] = size;
+    return cursor;
+}
+
+void Kernel::sceKernelTryAllocateVpl(Ctx &ctx) {
+    const auto it = vpls_.find(static_cast<std::int32_t>(ctx.gpr[4]));
+    if (it == vpls_.end()) {
+        finish(ctx, kErrorUnknownUid);
+        return;
+    }
+    const std::uint32_t address = vpl_allocate(it->second, ctx.gpr[5]);
+    if (address == 0u) {
+        finish(ctx, kErrorNoMemory);
+        return;
+    }
+    rt_.memory().store32(ctx.gpr[6], address);
+    finish(ctx, 0u);
+}
+
+// shortcut: a full pool fails at once instead of waiting for a free; add a Vpl wait if a game relies on blocking.
+void Kernel::sceKernelAllocateVpl(Ctx &ctx) { sceKernelTryAllocateVpl(ctx); }
+
+void Kernel::sceKernelFreeVpl(Ctx &ctx) {
+    const auto it = vpls_.find(static_cast<std::int32_t>(ctx.gpr[4]));
+    if (it == vpls_.end() || it->second.used.erase(ctx.gpr[5]) == 0u) {
+        finish(ctx, kErrorUnknownUid);
+        return;
+    }
+    finish(ctx, 0u);
+}
+
+void Kernel::sceKernelReferVplStatus(Ctx &ctx) {
+    const auto it = vpls_.find(static_cast<std::int32_t>(ctx.gpr[4]));
+    if (it == vpls_.end()) {
+        finish(ctx, kErrorUnknownUid);
+        return;
+    }
+    const auto &pool = it->second;
+    std::uint32_t used = 0u;
+    for (const auto &[address, length] : pool.used) used += length, (void)address;
+    const std::uint32_t info = ctx.gpr[5];
+    for (std::uint32_t i = 0; i < 32u; ++i)
+        rt_.memory().store8(info + 4u + i, i < pool.name.size() ? static_cast<std::uint8_t>(pool.name[i]) : 0u);
+    rt_.memory().store32(info + 0x24u, pool.attr);
+    rt_.memory().store32(info + 0x28u, pool.size);
+    rt_.memory().store32(info + 0x2Cu, pool.size - used);
+    rt_.memory().store32(info + 0x30u, 0u);
+    finish(ctx, 0u);
+}
+
+// ---------------------------------------------------------------------------
 // Status queries
+
+// The copy is done at once, so it has finished before anything can ask.
+void Kernel::sceDmacMemcpy(Ctx &ctx) {
+    sceKernelMemcpy(ctx);
+    finish(ctx, 0u);
+}
+
+void Kernel::scePowerGetCpuClockFrequencyInt(Ctx &ctx) { finish(ctx, 333u); }
+
+// status 0 (normal) and zero counters; Dante's Inferno hangs unless status reads 0.
+void Kernel::sceKernelReferSystemStatus(Ctx &ctx) {
+    for (std::uint32_t i = 4u; i < 0x1Cu; i += 4u) rt_.memory().store32(ctx.gpr[4] + i, 0u);
+    finish(ctx, 0u);
+}
 
 void Kernel::sceKernelReferThreadStatus(Ctx &ctx) {
     Thread *t = thread(static_cast<std::int32_t>(ctx.gpr[4]));
