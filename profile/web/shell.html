@@ -459,25 +459,38 @@
     'class PspOutput extends AudioWorkletProcessor {',
     '  constructor(options) {',
     '    super();',
+    '    const o = options.processorOptions;',
     '    this.queue = []; this.pos = 0; this.frames = 0; this.primed = false;',
-    '    this.base = 44100 / options.processorOptions.rate; this.drift = 0; this.target = 4410; this.under = 0; this.blocks = 0;',
+    '    this.base = 44100 / o.rate; this.drift = 0; this.under = 0; this.blocks = 0;',
+    // Queue the worklet aims for, in 44.1 kHz frames.  Phones get more slack:
+    // their main thread (which hands the samples over) stalls more often.  Each
+    // underrun adds 50 ms (up to 300 ms) and 30 s without one takes 10 ms back.
+    '    this.floor = o.target; this.target = o.target; this.calm = 0;',
     '    this.port.onmessage = (e) => {',
     '      this.queue.push(e.data); this.frames += e.data.length / 2;',
-    '      while (this.frames > 44100 * 0.25 && this.queue.length > 1) {',
+    '      const limit = Math.max(44100 * 0.25, this.target + 44100 * 0.15);',
+    '      while (this.frames > limit && this.queue.length > 1) {',
     '        this.frames -= this.queue[0].length / 2 - this.pos; this.queue.shift(); this.pos = 0;',
     '      }',
     '    };',
     '  }',
     '  process(inputs, outputs) {',
     '    const left = outputs[0][0], right = outputs[0][1] || outputs[0][0];',
-    '    if (++this.blocks % 344 === 0) this.port.postMessage({ queued: this.frames, under: this.under });',
-    '    if (!this.primed) { if (this.frames < 2048) { left.fill(0); right.fill(0); return true; } this.primed = true; }',
+    '    if (++this.blocks % 344 === 0) this.port.postMessage({ queued: this.frames, under: this.under, target: this.target });',
+    '    if (this.primed && ++this.calm > 10336 && this.target > this.floor) { this.target = Math.max(this.floor, this.target - 441); this.calm = 0; }',
+    // After an underrun, wait for the whole target again: restarting on a thin
+    // queue only buys the next underrun.
+    '    if (!this.primed) { if (this.frames < this.target) { left.fill(0); right.fill(0); return true; } this.primed = true; }',
     '    const error = Math.max(-1, Math.min(1, (this.frames - this.target) / this.target));',
     '    this.drift = Math.max(-0.008, Math.min(0.008, this.drift + error * 0.00000025));',
     '    const step = this.base * (1 + Math.max(-0.01, Math.min(0.01, this.drift + error * 0.004)));',
     '    for (let i = 0; i < left.length; i++) {',
     '      const chunk = this.queue[0];',
-    '      if (!chunk) { left[i] = right[i] = 0; if (this.primed) this.under++; this.primed = false; continue; }',
+    '      if (!chunk) {',
+    '        left[i] = right[i] = 0;',
+    '        if (this.primed) { this.under++; this.target = Math.min(13230, this.target + 2205); this.calm = 0; }',
+    '        this.primed = false; continue;',
+    '      }',
     '      const whole = Math.floor(this.pos), at = whole * 2, f = this.pos - whole;',
     '      const next = at + 2 < chunk.length ? chunk : this.queue[1], n = at + 2 < chunk.length ? at + 2 : 0;',
     '      const l = chunk[at], r = chunk[at + 1];',
@@ -502,12 +515,18 @@
     }
     var AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass || !window.AudioWorkletNode) return;
-    try { sound.context = new AudioContextClass({ sampleRate: 44100, latencyHint: 'interactive' }); }
-    catch (e) { sound.context = new AudioContextClass(); }
+    // Phones: a larger hardware buffer ('playback') and the device's own rate
+    // (forcing 44.1 kHz on a 48 kHz phone adds a resampler and can drop the
+    // fast audio path); the worklet resamples either way.
+    var phone = document.body.classList.contains('touch');
+    try {
+      sound.context = new AudioContextClass(phone ? { latencyHint: 'playback' }
+                                                  : { sampleRate: 44100, latencyHint: 'interactive' });
+    } catch (e) { sound.context = new AudioContextClass(); }
     var url = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }));
     sound.context.audioWorklet.addModule(url).then(function () {
       sound.node = new AudioWorkletNode(sound.context, 'psp-output',
-        { outputChannelCount: [2], processorOptions: { rate: sound.context.sampleRate } });
+        { outputChannelCount: [2], processorOptions: { rate: sound.context.sampleRate, target: phone ? 6615 : 4410 } });
       sound.node.port.onmessage = function (e) { sound.stats = e.data; };
       sound.gain = sound.context.createGain();
       sound.gain.gain.value = sound.muted ? 0 : 1;
