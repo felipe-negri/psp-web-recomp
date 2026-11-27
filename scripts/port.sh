@@ -59,11 +59,18 @@ if grep -q sceLibFont "$ROOT/profile/generated/$name/generated_registry.cpp" && 
   fonts="${PSP_FONT_DIR:-}"
   psar="${PSP_PSAR_DECRYPT:-$ROOT/tools/pspdecrypt/pspdecrypt}"
   updater="$disc/PSP_GAME/SYSDIR/UPDATE/DATA.BIN"
-  if [ -z "$fonts" ] && [ -x "$psar" ] && [ -f "$updater" ]; then
-    "$psar" -O "$game/firmware" "$updater" > /dev/null
-    fonts="$game/firmware/F0/font"
+  # PSP_FONT_DIR doubles as a cache: a disc with a real updater fills it for the
+  # discs without one (PSN releases ship DATA.BIN blanked out).
+  if ! ls "${fonts:-/nonexistent}"/*.pgf > /dev/null 2>&1 && [ -x "$psar" ] && [ -f "$updater" ] &&
+     "$psar" -O "$game/firmware" "$updater" > /dev/null 2>&1 && [ -d "$game/firmware/F0/font" ]; then
+    if [ -n "$fonts" ]; then
+      mkdir -p "$fonts"
+      cp "$game/firmware/F0/font"/*.pgf "$fonts/"
+    else
+      fonts="$game/firmware/F0/font"
+    fi
   fi
-  if [ -n "$fonts" ] && [ -d "$fonts" ]; then
+  if ls "${fonts:-/nonexistent}"/*.pgf > /dev/null 2>&1; then
     mkdir -p "$game/root/flash0/font"
     cp "$fonts"/*.pgf "$game/root/flash0/font/"
   else

@@ -492,6 +492,7 @@ private:
     void sceAudioOutput2ChangeLength(Ctx &ctx);
     void sceUmdCheckMedium(Ctx &ctx);
     void sceUmdGetDriveStat(Ctx &ctx);
+    void sceUmdGetDiscInfo(Ctx &ctx);
     void sceUtilityGetSystemParamInt(Ctx &ctx);
     void sceCtrlReadLatch(Ctx &ctx);
     void sceCtrlPeekLatch(Ctx &ctx);
@@ -567,6 +568,7 @@ private:
     std::shared_ptr<void> savedata_;
     std::shared_ptr<void> atrac_;           // atrac.cpp state
     void install_fonts();
+    void install_ccc();      // ccc.cpp: UTF-8/UTF-16 string helpers
     std::shared_ptr<void> fonts_;
     std::array<AudioChannel, 8> audio_channels_{};
     AudioChannel audio_output2_{};
