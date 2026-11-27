@@ -48,6 +48,18 @@ bool is_plain_elf(std::span<const std::uint8_t> bytes) {
     return bytes.size() > 4u && bytes[0] == 0x7Fu && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F';
 }
 
+// Firmware libraries this runtime emulates. Some discs (PSN releases among
+// them) ship a decrypted copy that would otherwise be loaded as game code.
+bool is_emulated_library(const std::string &path) {
+    static const char *const kNames[] = {"LIBATRAC3PLUS.PRX", "SC_SASCORE.PRX", "AUDIOCODEC.PRX", "VIDEOCODEC.PRX",
+                                         "MPEG.PRX",          "MPEGBASE.PRX",   "PSMF.PRX",       "LIBFONT.PRX",
+                                         "IFHANDLE.PRX",      "MEMAB.PRX",      "LIBHTTP.PRX",    "LIBSSL.PRX",
+                                         "LIBPARSE_HTTP.PRX", "LIBPARSE_URI.PRX"};
+    const std::string key = path_key(path);
+    const std::string base = key.substr(key.find_last_of('/') + 1u);
+    return base.starts_with("PSPNET") || std::find(std::begin(kNames), std::end(kNames), base) != std::end(kNames);
+}
+
 } // namespace
 
 void Kernel::register_exports(const psprecomp::PspModuleInfo &info) {
@@ -189,7 +201,7 @@ void Kernel::sceKernelLoadModule(Ctx &ctx) {
     std::string relative;
     (void)disc_relative(psp_path, relative);
     with_path_contents(ctx, psp_path, [this, psp_path, relative](std::span<const std::uint8_t> bytes) -> std::uint32_t {
-        if (is_plain_elf(bytes)) {
+        if (is_plain_elf(bytes) && !is_emulated_library(relative)) {
             try {
                 return load_module_image(relative, bytes);
             } catch (const std::exception &e) {
