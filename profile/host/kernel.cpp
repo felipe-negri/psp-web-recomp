@@ -38,6 +38,7 @@ constexpr std::uint32_t kHeartbeatInterval = 1024u;
 
 constexpr std::uint32_t kErrorNoMemory = 0x80020190u;
 constexpr std::uint32_t kErrorUnknownUid = 0x800200CBu;
+constexpr std::uint32_t kErrorIllegalThread = 0x80020197u;
 constexpr std::uint32_t kErrorUnknownThread = 0x80020198u;
 constexpr std::uint32_t kErrorUnknownSema = 0x80020199u;
 constexpr std::uint32_t kErrorUnknownEventFlag = 0x8002019Au;
@@ -389,6 +390,7 @@ void Kernel::install(const std::vector<psprecomp::PspImport> &imports) {
     install_sas();
     install_atrac();
     install_fonts();
+    install_ccc();
     install_savedata();
     for (const auto &import : imports) install_fallback(import);
 }
@@ -858,6 +860,10 @@ void Kernel::sceKernelExitThread(Ctx &ctx) { exit_thread(ctx, static_cast<std::i
 void Kernel::sceKernelExitDeleteThread(Ctx &ctx) { exit_thread(ctx, static_cast<std::int32_t>(ctx.gpr[4]), true); }
 
 void Kernel::sceKernelDeleteThread(Ctx &ctx) {
+    if (ctx.gpr[4] == 0u || static_cast<std::int32_t>(ctx.gpr[4]) == current_uid_) {
+        finish(ctx, kErrorIllegalThread);
+        return;
+    }
     Thread *t = thread(static_cast<std::int32_t>(ctx.gpr[4]));
     if (t == nullptr) {
         finish(ctx, kErrorUnknownThread);
@@ -871,8 +877,8 @@ void Kernel::sceKernelDeleteThread(Ctx &ctx) {
 
 void Kernel::sceKernelTerminateDeleteThread(Ctx &ctx) {
     const std::int32_t uid = static_cast<std::int32_t>(ctx.gpr[4]);
-    if (uid == current_uid_ || uid == 0) {
-        exit_thread(ctx, 0, true);
+    if (uid == current_uid_ || uid == 0) { // the PSP refuses; games pass 0 for a thread they never made
+        finish(ctx, kErrorIllegalThread);
         return;
     }
     sceKernelDeleteThread(ctx);
@@ -935,6 +941,10 @@ void Kernel::sceKernelWaitThreadEnd(Ctx &ctx) {
         return;
     }
     Thread *self = current();
+    if (target == self) { // id 0 or its own: the PSP refuses instead of waiting forever
+        finish(ctx, kErrorIllegalThread);
+        return;
+    }
     if (self != nullptr) {
         self->wait_uid = target->uid;
         begin_timeout(*self, ctx.gpr[5]);

@@ -70,6 +70,7 @@ void Kernel::install_devices() {
 
     hle("sceUmdUser", 0x46EBB729u, "sceUmdCheckMedium", &Kernel::sceUmdCheckMedium);
     hle("sceUmdUser", 0x6B4A146Cu, "sceUmdGetDriveStat", &Kernel::sceUmdGetDriveStat);
+    hle("sceUmdUser", 0x340B7686u, "sceUmdGetDiscInfo", &Kernel::sceUmdGetDiscInfo);
     hle("sceUmdUser", 0xC6183D47u, "sceUmdActivate", &Kernel::return_zero);
     hle("sceUmdUser", 0x56202973u, "sceUmdWaitDriveStatWithTimer", &Kernel::return_zero);
     hle("sceUmdUser", 0x8EF08FCEu, "sceUmdWaitDriveStat", &Kernel::return_zero);
@@ -356,6 +357,11 @@ void Kernel::sceAudioOutput2ChangeLength(Ctx &ctx) {
 
 void Kernel::sceUmdCheckMedium(Ctx &ctx) { finish(ctx, 1u); }
 void Kernel::sceUmdGetDriveStat(Ctx &ctx) { finish(ctx, 0x32u); } // present, ready, readable
+// pspUmdInfo {size, type}: a game disc
+void Kernel::sceUmdGetDiscInfo(Ctx &ctx) {
+    if (ctx.gpr[4] != 0u) rt_.memory().store32(ctx.gpr[4] + 4u, 0x10u);
+    finish(ctx, 0u);
+}
 
 void Kernel::sceUtilityGetSystemParamInt(Ctx &ctx) {
     std::uint32_t value = 0u;
@@ -415,7 +421,11 @@ void Kernel::sceRtcGetCurrentTick(Ctx &ctx) {
 void Kernel::sceRtcGetTickResolution(Ctx &ctx) { finish(ctx, 1000000u); }
 
 void Kernel::sceRtcGetCurrentClockLocalTime(Ctx &ctx) {
-    const std::time_t now = std::time(nullptr);
+    const auto clock = std::chrono::system_clock::now();
+    const std::time_t now = std::chrono::system_clock::to_time_t(clock);
+    // games time their fades and frames from the microseconds field
+    const auto micro = static_cast<std::uint32_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(clock.time_since_epoch()).count() % 1000000);
     std::tm local{};
 #if defined(_WIN32)
     localtime_s(&local, &now);
@@ -430,7 +440,7 @@ void Kernel::sceRtcGetCurrentClockLocalTime(Ctx &ctx) {
         rt_.memory().store16(out + 6u, static_cast<std::uint16_t>(local.tm_hour));
         rt_.memory().store16(out + 8u, static_cast<std::uint16_t>(local.tm_min));
         rt_.memory().store16(out + 10u, static_cast<std::uint16_t>(local.tm_sec));
-        rt_.memory().store32(out + 12u, 0u);
+        rt_.memory().store32(out + 12u, micro);
     }
     finish(ctx, 0u);
 }
