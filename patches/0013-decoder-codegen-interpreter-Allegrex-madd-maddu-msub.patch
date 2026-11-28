@@ -1,0 +1,99 @@
+From c75f507b3d675e66750f3c164b0baf422419d73b Mon Sep 17 00:00:00 2001
+From: Felipe Negri <felipe.negri43@gmail.com>
+Date: Fri, 27 Nov 2026 21:49:09 -0300
+Subject: [PATCH 13/13] decoder, codegen, interpreter: Allegrex madd, maddu,
+ msub and msubu
+
+Multiply-accumulate on HI:LO (SPECIAL funct 0x1C, 0x1D, 0x2E, 0x2F) was
+decoded as unsupported and halted the game (Tekken 6).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/psprecomp/decoder.hpp |  2 +-
+ src/decoder.cpp               |  4 ++++
+ src/interpreter.cpp           | 13 +++++++++++++
+ tools/codegen_main.cpp        | 16 ++++++++++++++++
+ 4 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/include/psprecomp/decoder.hpp b/include/psprecomp/decoder.hpp
+index c902366..d9a3aae 100644
+--- a/include/psprecomp/decoder.hpp
++++ b/include/psprecomp/decoder.hpp
+@@ -13,7 +13,7 @@ enum class OpcodeKind {
+     Lw, Lwl, Lwr, Sw, Swl, Swr, Lh, Lhu, Sh, Lb, Lbu, Sb, Lwc1, Swc1, Cache,
+     Beq, Bne, Beql, Bnel, Blez, Bgtz, Blezl, Bgtzl, Bltz, Bgez, Bltzl, Bgezl, Bltzal, Bgezal, Bltzall, Bgezall, J, Jal, Jr, Jalr,
+     Mfhi, Mflo, Mthi, Mtlo,
+-    Mult, Multu, Div, Divu,
++    Mult, Multu, Div, Divu, Madd, Maddu, Msub, Msubu,
+     Mfc1, Mtc1, Cfc1, Ctc1,
+     AddS, SubS, MulS, DivS, SqrtS, AbsS, MovS, NegS,
+     RoundWS, TruncWS, CeilWS, FloorWS, CvtWS, CvtSW, FpuCompare,
+diff --git a/src/decoder.cpp b/src/decoder.cpp
+index 794c00f..78893a1 100644
+--- a/src/decoder.cpp
++++ b/src/decoder.cpp
+@@ -78,6 +78,10 @@ DecodedInstruction decode_allegrex(std::uint32_t word) {
+         case 0x19: d.kind = OpcodeKind::Multu; d.mnemonic = "multu"; break;
+         case 0x1A: d.kind = OpcodeKind::Div; d.mnemonic = "div"; break;
+         case 0x1B: d.kind = OpcodeKind::Divu; d.mnemonic = "divu"; break;
++        case 0x1C: d.kind = OpcodeKind::Madd; d.mnemonic = "madd"; break;
++        case 0x1D: d.kind = OpcodeKind::Maddu; d.mnemonic = "maddu"; break;
++        case 0x2E: d.kind = OpcodeKind::Msub; d.mnemonic = "msub"; break;
++        case 0x2F: d.kind = OpcodeKind::Msubu; d.mnemonic = "msubu"; break;
+         case 0x20: d.kind = OpcodeKind::Add; d.mnemonic = "add"; break;
+         case 0x21: d.kind = OpcodeKind::Addu; d.mnemonic = "addu"; break;
+         case 0x22: d.kind = OpcodeKind::Sub; d.mnemonic = "sub"; break;
+diff --git a/src/interpreter.cpp b/src/interpreter.cpp
+index 87d3798..b3a628f 100644
+--- a/src/interpreter.cpp
++++ b/src/interpreter.cpp
+@@ -382,6 +382,19 @@ bool execute(Runtime &rt, AllegrexContext &ctx, const DecodedInstruction &d, std
+         ctx.hi = static_cast<std::uint32_t>(product >> 32u);
+         break;
+     }
++    case K::Madd:
++    case K::Maddu:
++    case K::Msub:
++    case K::Msubu: {
++        const bool is_signed = d.kind == K::Madd || d.kind == K::Msub;
++        const std::uint64_t a = is_signed ? static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(s))) : s;
++        const std::uint64_t b = is_signed ? static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(t))) : t;
++        const std::uint64_t acc = (static_cast<std::uint64_t>(ctx.hi) << 32u) | ctx.lo;
++        const std::uint64_t result = d.kind == K::Msub || d.kind == K::Msubu ? acc - a * b : acc + a * b;
++        ctx.lo = static_cast<std::uint32_t>(result);
++        ctx.hi = static_cast<std::uint32_t>(result >> 32u);
++        break;
++    }
+     case K::Div: {
+         const auto dividend = static_cast<std::int32_t>(s), divisor = static_cast<std::int32_t>(t);
+         if (divisor == 0) {
+diff --git a/tools/codegen_main.cpp b/tools/codegen_main.cpp
+index 2497407..4a9c0ed 100644
+--- a/tools/codegen_main.cpp
++++ b/tools/codegen_main.cpp
+@@ -206,6 +206,22 @@ std::string emit_regular(const psprecomp::DecodedInstruction &d, std::uint32_t p
+         out << "    { const std::uint64_t product = static_cast<std::uint64_t>(" << reg(d.rs) << ") * static_cast<std::uint64_t>(" << reg(d.rt) << "); "
+             << "ctx.lo = static_cast<std::uint32_t>(product); ctx.hi = static_cast<std::uint32_t>(product >> 32u); }\n";
+         break;
++    case psprecomp::OpcodeKind::Madd:
++    case psprecomp::OpcodeKind::Maddu:
++    case psprecomp::OpcodeKind::Msub:
++    case psprecomp::OpcodeKind::Msubu: {
++        // Allegrex multiply-accumulate on HI:LO
++        const bool is_signed = d.kind == psprecomp::OpcodeKind::Madd || d.kind == psprecomp::OpcodeKind::Msub;
++        const bool subtract = d.kind == psprecomp::OpcodeKind::Msub || d.kind == psprecomp::OpcodeKind::Msubu;
++        const std::string a = is_signed ? "static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(" + reg(d.rs) + ")))"
++                                        : "static_cast<std::uint64_t>(" + reg(d.rs) + ")";
++        const std::string b = is_signed ? "static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(" + reg(d.rt) + ")))"
++                                        : "static_cast<std::uint64_t>(" + reg(d.rt) + ")";
++        out << "    { const std::uint64_t acc = (static_cast<std::uint64_t>(ctx.hi) << 32u) | ctx.lo; "
++            << "const std::uint64_t result = acc " << (subtract ? "-" : "+") << " " << a << " * " << b << "; "
++            << "ctx.lo = static_cast<std::uint32_t>(result); ctx.hi = static_cast<std::uint32_t>(result >> 32u); }\n";
++        break;
++    }
+     case psprecomp::OpcodeKind::Div:
+         // $zero is emitted as a literal 0u.  If it is also the divisor, do not
+         // emit a syntactically present / or % expression at all: MSVC diagnoses
+-- 
+2.56.1
+

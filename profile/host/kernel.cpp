@@ -240,6 +240,7 @@ void Kernel::install(const std::vector<psprecomp::PspImport> &imports) {
     hle(tm, 0x9ACE131Eu, "sceKernelSleepThread", &Kernel::sceKernelSleepThread);
     hle(tm, 0x82826F70u, "sceKernelSleepThreadCB", &Kernel::sceKernelSleepThread);
     hle(tm, 0xD59EAD2Fu, "sceKernelWakeupThread", &Kernel::sceKernelWakeupThread);
+    hle(tm, 0xFCCFAD26u, "sceKernelCancelWakeupThread", &Kernel::sceKernelCancelWakeupThread);
     hle(tm, 0xCEADEB47u, "sceKernelDelayThread", &Kernel::sceKernelDelayThread);
     hle(tm, 0x68DA9E36u, "sceKernelDelayThreadCB", &Kernel::sceKernelDelayThread);
     hle(tm, 0x293B45B8u, "sceKernelGetThreadId", &Kernel::sceKernelGetThreadId);
@@ -251,6 +252,8 @@ void Kernel::install(const std::vector<psprecomp::PspImport> &imports) {
     hle(tm, 0x349D6D6Cu, "sceKernelCheckCallback", &Kernel::sceKernelCheckCallback);
     hle(tm, 0x369ED59Du, "sceKernelGetSystemTimeLow", &Kernel::sceKernelGetSystemTimeLow);
     hle(tm, 0x82BC5777u, "sceKernelGetSystemTimeWide", &Kernel::sceKernelGetSystemTimeWide);
+    hle(tm, 0xBA6B92E2u, "sceKernelSysClock2USec", &Kernel::sceKernelSysClock2USec);
+    hle(tm, 0xE1619D7Cu, "sceKernelSysClock2USecWide", &Kernel::sceKernelSysClock2USecWide);
     hle(tm, 0xDB738F35u, "sceKernelGetSystemTime", &Kernel::sceKernelGetSystemTime);
     hle(tm, 0xD6DA4BA1u, "sceKernelCreateSema", &Kernel::sceKernelCreateSema);
     hle(tm, 0xB7D098C6u, "sceKernelCreateMutex", &Kernel::sceKernelCreateMutex);
@@ -391,6 +394,7 @@ void Kernel::install(const std::vector<psprecomp::PspImport> &imports) {
     install_atrac();
     install_fonts();
     install_ccc();
+    install_psmfplayer();
     install_savedata();
     for (const auto &import : imports) install_fallback(import);
 }
@@ -906,6 +910,18 @@ void Kernel::sceKernelWakeupThread(Ctx &ctx) {
     maybe_preempt(ctx);
 }
 
+// Drops the wakeups queued for a thread (0: the caller) and returns how many there were.
+void Kernel::sceKernelCancelWakeupThread(Ctx &ctx) {
+    Thread *t = thread(static_cast<std::int32_t>(ctx.gpr[4]));
+    if (t == nullptr) {
+        finish(ctx, kErrorUnknownThread);
+        return;
+    }
+    const std::uint32_t pending = t->wakeup_count;
+    t->wakeup_count = 0u;
+    finish(ctx, pending);
+}
+
 void Kernel::sceKernelDelayThread(Ctx &ctx) {
     Thread *t = current();
     if (t != nullptr) t->wake_time_us = now_us() + std::max(ctx.gpr[4], 1u);
@@ -957,6 +973,22 @@ void Kernel::sceKernelCheckCallback(Ctx &ctx) { finish(ctx, 0u); }
 
 void Kernel::sceKernelGetSystemTimeLow(Ctx &ctx) { finish(ctx, static_cast<std::uint32_t>(now_us())); }
 void Kernel::sceKernelGetSystemTimeWide(Ctx &ctx) { finish64(ctx, now_us()); }
+
+// Splits a system clock (microseconds) into seconds and the remaining microseconds.
+void Kernel::split_sysclock(std::uint64_t clock, std::uint32_t seconds_out, std::uint32_t micro_out) {
+    if (seconds_out != 0u) rt_.memory().store32(seconds_out, static_cast<std::uint32_t>(clock / 1000000u));
+    if (micro_out != 0u) rt_.memory().store32(micro_out, static_cast<std::uint32_t>(clock % 1000000u));
+}
+void Kernel::sceKernelSysClock2USec(Ctx &ctx) { // (SceKernelSysClock *, u32 *seconds, u32 *micro)
+    const std::uint64_t clock = ctx.gpr[4] == 0u ? 0u
+        : rt_.memory().load32(ctx.gpr[4]) | (static_cast<std::uint64_t>(rt_.memory().load32(ctx.gpr[4] + 4u)) << 32u);
+    split_sysclock(clock, ctx.gpr[5], ctx.gpr[6]);
+    finish(ctx, 0u);
+}
+void Kernel::sceKernelSysClock2USecWide(Ctx &ctx) { // (u64 clock in a0:a1, u32 *seconds, u32 *micro)
+    split_sysclock(ctx.gpr[4] | (static_cast<std::uint64_t>(ctx.gpr[5]) << 32u), ctx.gpr[6], ctx.gpr[7]);
+    finish(ctx, 0u);
+}
 
 void Kernel::sceKernelGetSystemTime(Ctx &ctx) {
     const std::uint64_t now = now_us();

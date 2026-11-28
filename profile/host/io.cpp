@@ -673,6 +673,15 @@ void Kernel::sceIoIoctl(Ctx &ctx) {
         finish(ctx, 0u);
         return;
     }
+    if (command == 0x01020006u) { // the sector a disc file starts at; games add their own offsets to it
+        std::string relative;
+        DirectoryEntry entry;
+        if (ctx.gpr[8] != 0u && ctx.gpr[9] >= 4u && disc_relative(it->second.path, relative) &&
+            stat_path(it->second.path, entry))
+            rt_.memory().store32(ctx.gpr[8], disc_lbn(relative, entry.size));
+        finish(ctx, 0u);
+        return;
+    }
     if (command != 0x04100001u) {
         std::ostringstream name;
         name << "sceIoIoctl 0x" << std::hex << std::setw(8) << std::setfill('0') << command;

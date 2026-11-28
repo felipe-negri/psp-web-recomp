@@ -53,6 +53,33 @@ for path, lba, size in sorted(files, key=lambda e: e[1]):
         while left:
             chunk = f.read(min(left, 1 << 20)); o.write(chunk); left -= len(chunk)
     total += size
+# Data the file system does not list (Tekken 6 keeps 384 MB past its last file
+# and reads it by sector). Each such region becomes /_unlisted_<sector>.bin so
+# the sector-addressed opens below can find it.
+volume_end = struct.unpack('<I', pvd[80:84])[0]
+used = sorted((lba, lba + (size + SEC - 1) // SEC) for _, lba, size in files)
+regions, cursor = [], 0
+for start, end in used + [(volume_end, volume_end)]:
+    if start - cursor >= 64:  # small gaps are directory and padding sectors
+        regions.append((cursor, start))
+    cursor = max(cursor, end)
+for start, end in regions:
+    f.seek(start * SEC)
+    while start < end and not any(f.read(SEC)):  # leading padding
+        start += 1
+    if start == end:
+        continue
+    name = f'/_unlisted_{start}.bin'
+    f.seek(start * SEC)
+    with open(os.path.join(out, name.lstrip('/')), 'wb') as o:
+        left = (end - start) * SEC
+        while left:
+            chunk = f.read(min(left, 1 << 20))
+            if not chunk:
+                break
+            o.write(chunk); left -= len(chunk)
+    size = os.path.getsize(os.path.join(out, name.lstrip('/')))
+    files.append((name, start, size)); total += size
 # Real sector of every file, for games that open disc0:/sce_lbn<n>_size<m> from their own tables.
 with open(os.path.join(os.path.dirname(os.path.abspath(out)), 'disc.lbn'), 'w') as o:
     for path, lba, size in sorted(files, key=lambda e: e[1]):
