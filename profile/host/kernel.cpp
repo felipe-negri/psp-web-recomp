@@ -395,6 +395,7 @@ void Kernel::install(const std::vector<psprecomp::PspImport> &imports) {
     install_fonts();
     install_ccc();
     install_psmfplayer();
+    install_vtimers();
     install_savedata();
     for (const auto &import : imports) install_fallback(import);
 }

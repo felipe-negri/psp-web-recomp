@@ -53,6 +53,8 @@ public:
 
 private:
     void run_inline(std::function<void()> &work);
+    bool run_guarded(std::uint32_t list, std::uint32_t stall);
+    bool reported_bad_list_{};
     void loop();                   // native thread body
     bool work_once(double wait_ms); // runs one queued item; false if none arrived in time
 #ifdef __EMSCRIPTEN__

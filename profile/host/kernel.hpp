@@ -582,6 +582,8 @@ private:
     void install_fonts();
     void install_ccc();      // ccc.cpp: UTF-8/UTF-16 string helpers
     void install_psmfplayer(); // psmfplayer.cpp: movies, skipped
+    void install_vtimers();  // vtimer.cpp: virtual timers as stopwatches
+    std::shared_ptr<void> vtimers_;
     std::shared_ptr<void> psmfplayer_;
     std::shared_ptr<void> fonts_;
     std::array<AudioChannel, 8> audio_channels_{};

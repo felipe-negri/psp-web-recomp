@@ -1,0 +1,69 @@
+From eca3981a16e722c91b10982abe73ff2691f04316 Mon Sep 17 00:00:00 2001
+From: Felipe Negri <felipe.negri43@gmail.com>
+Date: Sat, 28 Nov 2026 00:14:49 -0300
+Subject: [PATCH] decoder, codegen, interpreter: VFPU vsgn
+
+vsgn (VFPU4 group 2, op 10) was decoded as unsupported and halted Tekken 6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/decoder.cpp        | 3 +++
+ src/interpreter.cpp    | 4 +++-
+ tools/codegen_main.cpp | 3 ++-
+ 3 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/decoder.cpp b/src/decoder.cpp
+index 78893a1..25b6f8c 100644
+--- a/src/decoder.cpp
++++ b/src/decoder.cpp
+@@ -331,6 +331,9 @@ DecodedInstruction decode_allegrex(std::uint32_t word) {
+         } else if (group == 21u) {
+             d.kind = OpcodeKind::Vcmov;
+             d.mnemonic = ((word >> 19u) & 1u) == 0u ? "vcmovt" : "vcmovf";
++        } else if (group == 2u && operation == 10u) {
++            d.kind = OpcodeKind::VfpuUnary; // operation 42 in the unary tables
++            d.mnemonic = "vsgn";
+         } else if (group == 2u && operation == 4u) {
+             d.kind = OpcodeKind::Vocp;
+             d.mnemonic = "vocp";
+diff --git a/src/interpreter.cpp b/src/interpreter.cpp
+index b3a628f..1d6081f 100644
+--- a/src/interpreter.cpp
++++ b/src/interpreter.cpp
+@@ -106,6 +106,7 @@ float unary(std::uint32_t operation, float s) {
+     case 2u: return -s;
+     case 4u: return s <= 0.0f ? 0.0f : (s > 1.0f ? 1.0f : s);
+     case 5u: return s < -1.0f ? -1.0f : (s > 1.0f ? 1.0f : s);
++    case 42u: return s > 0.0f ? 1.0f : (s < 0.0f ? -1.0f : 0.0f); // vsgn (group 2, op 10)
+     case 16u: return 1.0f / s;
+     case 17u: return 1.0f / std::sqrt(s);
+     case 18u: return std::sin(s * kHalfPi);
+@@ -532,7 +533,8 @@ bool execute(Runtime &rt, AllegrexContext &ctx, const DecodedInstruction &d, std
+     case K::VfpuUnary: {
+         float source[4]{}, result[4]{};
+         ctx.read_vfpu_vector_with_source_prefix(source, vs, length, 0u);
+-        for (std::uint32_t i = 0; i < length; ++i) result[i] = unary((w >> 16u) & 31u, source[i]);
++        const std::uint32_t operation = ((w >> 21u) & 31u) == 2u ? 42u : (w >> 16u) & 31u; // vsgn
++        for (std::uint32_t i = 0; i < length; ++i) result[i] = unary(operation, source[i]);
+         ctx.write_vfpu_vector_with_destination_prefix(result, vd, length);
+         break;
+     }
+diff --git a/tools/codegen_main.cpp b/tools/codegen_main.cpp
+index 4a9c0ed..2db8a65 100644
+--- a/tools/codegen_main.cpp
++++ b/tools/codegen_main.cpp
+@@ -710,9 +710,10 @@ std::string emit_regular(const psprecomp::DecodedInstruction &d, std::uint32_t p
+         const std::uint32_t length = size_code + 1u;
+         const std::uint32_t destination = d.word & 0x7Fu;
+         const std::uint32_t source = (d.word >> 8u) & 0x7Fu;
+-        const std::uint32_t operation = (d.word >> 16u) & 31u;
++        const std::uint32_t operation = ((d.word >> 21u) & 31u) == 2u ? 42u : (d.word >> 16u) & 31u; // 42: vsgn
+         std::string expression;
+         switch (operation) {
++        case 42u: expression = "(vfpu_s[i] > 0.0f ? 1.0f : (vfpu_s[i] < 0.0f ? -1.0f : 0.0f))"; break;
+         case 0u: expression = "vfpu_s[i]"; break;
+         case 1u: expression = "std::fabs(vfpu_s[i])"; break;
+         case 2u: expression = "-vfpu_s[i]"; break;
+-- 
+2.56.1
+
