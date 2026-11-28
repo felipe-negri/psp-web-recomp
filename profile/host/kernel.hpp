@@ -344,6 +344,7 @@ private:
     void sceKernelTerminateDeleteThread(Ctx &ctx);
     void sceKernelSleepThread(Ctx &ctx);
     void sceKernelWakeupThread(Ctx &ctx);
+    void sceKernelCancelWakeupThread(Ctx &ctx);
     void sceKernelDelayThread(Ctx &ctx);
     void sceKernelGetThreadId(Ctx &ctx);
     void sceKernelGetThreadCurrentPriority(Ctx &ctx);
@@ -353,6 +354,9 @@ private:
     void sceKernelCheckCallback(Ctx &ctx);
     void sceKernelGetSystemTimeLow(Ctx &ctx);
     void sceKernelGetSystemTimeWide(Ctx &ctx);
+    void sceKernelSysClock2USec(Ctx &ctx);
+    void sceKernelSysClock2USecWide(Ctx &ctx);
+    void split_sysclock(std::uint64_t clock, std::uint32_t seconds_out, std::uint32_t micro_out);
     void sceKernelGetSystemTime(Ctx &ctx);
     void sceKernelCreateSema(Ctx &ctx);
     void sceKernelCreateMutex(Ctx &ctx);
@@ -493,6 +497,7 @@ private:
     void sceUmdCheckMedium(Ctx &ctx);
     void sceUmdGetDriveStat(Ctx &ctx);
     void sceUmdGetDiscInfo(Ctx &ctx);
+    void sceOpenPSIDGetOpenPSID(Ctx &ctx);
     void sceUtilityGetSystemParamInt(Ctx &ctx);
     void sceCtrlReadLatch(Ctx &ctx);
     void sceCtrlPeekLatch(Ctx &ctx);
@@ -515,6 +520,13 @@ private:
     void sceKernelReferSystemStatus(Ctx &ctx);
     void sceDmacMemcpy(Ctx &ctx);
     void scePowerGetCpuClockFrequencyInt(Ctx &ctx);
+    void scePowerGetBusClockFrequencyInt(Ctx &ctx);
+    void scePowerGetPllClockFrequencyInt(Ctx &ctx);
+    void scePowerSetClockFrequency(Ctx &ctx);
+    void scePowerSetCpuClockFrequency(Ctx &ctx);
+    void scePowerSetBusClockFrequency(Ctx &ctx);
+    // scePower clocks in MHz; 333 is what the CPU getter always answered before
+    std::uint32_t clock_pll_{333u}, clock_cpu_{333u}, clock_bus_{166u};
     std::uint32_t vpl_allocate(VariablePool &pool, std::uint32_t size);
     void sceKernelReferThreadStatus(Ctx &ctx);
     void sceKernelReferEventFlagStatus(Ctx &ctx);
@@ -569,6 +581,10 @@ private:
     std::shared_ptr<void> atrac_;           // atrac.cpp state
     void install_fonts();
     void install_ccc();      // ccc.cpp: UTF-8/UTF-16 string helpers
+    void install_psmfplayer(); // psmfplayer.cpp: movies, skipped
+    void install_vtimers();  // vtimer.cpp: virtual timers as stopwatches
+    std::shared_ptr<void> vtimers_;
+    std::shared_ptr<void> psmfplayer_;
     std::shared_ptr<void> fonts_;
     std::array<AudioChannel, 8> audio_channels_{};
     AudioChannel audio_output2_{};

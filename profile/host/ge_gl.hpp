@@ -86,6 +86,7 @@ public:
     // Makes VRAM current for a range the CPU is about to read (texture decode).
     // Returns true when GPU pixels were downloaded into the range.
     bool prepare_vram_read(std::uint32_t address, std::uint32_t bytes);
+    void forget_gpu_pixels(std::uint32_t address, std::uint32_t bytes);
 
     void set_state(const GlDrawState &state);
     void triangle(const GlVertex &a, const GlVertex &b, const GlVertex &c);
@@ -155,6 +156,7 @@ private:
         Rect content;    // everything the GPU has drawn
         bool alive{true};
         std::uint64_t last_draw{};  // draw sequence of the newest batch drawn into it
+        std::uint64_t drawn_frame{}; // presents counted when it was last drawn into
         std::vector<Rect> pending_uploads; // VRAM rectangles a block transfer rewrote
         // The PSP keeps the stencil in the framebuffer's alpha.  Here it lives
         // in the GL stencil buffer while drawing and is copied into the colour
@@ -201,7 +203,8 @@ private:
     // Copies `from` into `into` on the GPU, reinterpreting 32-bit pixels as
     // pairs of 16-bit ones (or back); false when the layouts are incompatible.
     bool reinterpret(Surface &into, const Surface &from, const Rect &hit);
-    void download(Surface &s);
+    // Writes GPU pixels back to VRAM; rows limits it to the ones a reader needs.
+    void download(Surface &s, int first_row = 0, int last_row = 1 << 30);
     void mark_drawn(Surface &s, const Rect &r);
     void recompute_bounds(Surface &s);
     // Calls f(row, x0, x1) for each piece of `rect` that lands in surface `s`.
@@ -274,6 +277,13 @@ private:
     GLuint reinterpret_program_{};
     GLint u_ri_src_{}, u_ri_mode_{}, u_ri_format_{}, u_ri_delta_{}, u_ri_row_bytes_{}, u_ri_src_size_{};
     std::uint64_t draw_sequence_{};
+    std::uint64_t presents_{};
+    // VRAM pages holding GPU pixels not yet written back, with a hash of what the
+    // page held when they were drawn: a different hash at write-back time means
+    // the CPU wrote there since, and its data wins (the PSP's GPU wrote first).
+    std::vector<std::uint64_t> pending_hash_ = std::vector<std::uint64_t>(512u, 0u);
+    std::vector<bool> pending_page_ = std::vector<bool>(512u, false);
+    [[nodiscard]] std::uint64_t vram_page_hash(std::uint32_t page) const;
     // Surfaces are scale_ times larger than the PSP pixels they hold; uploads
     // and downloads pass through a native-size staging framebuffer.
     int scale_{1};

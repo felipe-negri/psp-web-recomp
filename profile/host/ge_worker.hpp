@@ -40,6 +40,7 @@ public:
     void update_stall(std::uint32_t id, std::uint32_t stall);
     // True once list `id` (0: every list queued so far) has finished.
     [[nodiscard]] bool done(std::uint32_t id) const noexcept;
+    [[nodiscard]] std::uint32_t newest() const noexcept { return queued_; } // id of the last list queued
     // Lets real time pass while the GE thread works (at most `max_ms`).
     void wait_for_progress(double max_ms) const;
 
@@ -53,6 +54,8 @@ public:
 
 private:
     void run_inline(std::function<void()> &work);
+    bool run_guarded(std::uint32_t list, std::uint32_t stall);
+    bool reported_bad_list_{};
     void loop();                   // native thread body
     bool work_once(double wait_ms); // runs one queued item; false if none arrived in time
 #ifdef __EMSCRIPTEN__
@@ -84,6 +87,9 @@ public:
     // GE side: marks the end of a frame's work, so the web thread returns to
     // the browser and the frame appears.
     void mark_presented() noexcept { presented_ = true; }
+    // A frame queued for the screen and not drawn yet: the page asks for frames
+    // faster than a slow GPU draws them, and queued frames would hold up lists.
+    std::atomic<bool> present_queued{};
 };
 
 } // namespace pspweb

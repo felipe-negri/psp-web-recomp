@@ -153,7 +153,9 @@ void present_gl(GLuint fbo) {
     auto &s = g_session;
     const auto &d = s.kernel->display();
     auto &worker = s.kernel->ge_worker();
+    if (worker.threaded() && worker.present_queued.exchange(true)) return;
     worker.post([&worker, fb = d.framebuffer, stride = d.stride, format = d.format, fbo] {
+        worker.present_queued.store(false);
         auto *gl = g_session.gl.get();
         if (gl == nullptr) return;
         const int scale = gl->render_scale();

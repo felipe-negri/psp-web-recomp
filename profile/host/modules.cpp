@@ -23,6 +23,7 @@ namespace {
 
 constexpr std::uint32_t kErrorUnknownModule = 0x8002012Eu;
 constexpr std::uint32_t kErrorModuleLoad = 0x80020146u;
+constexpr std::uint32_t kErrorNoFile = 0x8002012Fu;
 constexpr std::uint32_t kNidModuleStart = 0xD632ACDBu;
 constexpr std::uint32_t kNidModuleStop = 0xCEE8593Cu;
 constexpr std::uint32_t kModuleStartStack = 0x40000u;
@@ -209,7 +210,17 @@ void Kernel::sceKernelLoadModule(Ctx &ctx) {
                 return kErrorModuleLoad;
             }
         }
-        // Encrypted firmware library (or a file that is missing): emulated.
+        // A game's own file that is not there (Tekken 6 probes ms0:/MEMSTICK.IND
+        // for data installed to the memory stick) fails as on the PSP.
+        if (bytes.empty() && !relative.empty() && psp_path.rfind("flash", 0) != 0) {
+            std::cerr << "[kernel] sceKernelLoadModule(" << psp_path << ") -> no such file\n";
+            return kErrorNoFile;
+        }
+        if (bytes.empty() && psp_path.rfind("ms", 0) == 0) {
+            std::cerr << "[kernel] sceKernelLoadModule(" << psp_path << ") -> no such file\n";
+            return kErrorNoFile;
+        }
+        // Encrypted firmware library: emulated.
         const std::int32_t uid = new_uid();
         modules_[uid] = LoadedModule{relative, {}, 0u, 0u, 0u, 0u, 0u, -1, false};
         std::cerr << "[kernel] sceKernelLoadModule(" << psp_path << ") -> HLE module " << uid << "\n";

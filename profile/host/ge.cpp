@@ -214,6 +214,7 @@ bool Ge::run_list(std::uint32_t start, std::uint32_t stall) {
         if ((pc_ & ~0xFFFu) != page_start) {
             page_start = pc_ & ~0xFFFu;
             page = memory_.raw_pointer(page_start, 0x1000u);
+            if (gl_ != nullptr && (page_start & 0x0F000000u) == 0x04000000u) gl_->forget_gpu_pixels(page_start, 0x1000u);
         }
         std::uint32_t op;
         if (page != nullptr) std::memcpy(&op, page + (pc_ - page_start), 4u);

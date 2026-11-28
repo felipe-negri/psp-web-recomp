@@ -3,6 +3,8 @@
 #include "ge.hpp"
 
 #include <chrono>
+#include <cstdio>
+#include <iostream>
 #include <thread>
 
 #ifdef __EMSCRIPTEN__
@@ -114,7 +116,7 @@ std::uint32_t GeWorker::enqueue(std::uint32_t list, std::uint32_t stall, std::in
     const std::uint32_t id = ++queued_;
     post([this, id, list, stall, callback] {
         ge_.set_list_callback(callback);
-        if (ge_.run_list(list, stall)) {
+        if (run_guarded(list, stall)) {
             stalled_pc_ = 0u;
             completed_.store(id);
         } else {
@@ -131,13 +133,26 @@ void GeWorker::update_stall(std::uint32_t, std::uint32_t stall) {
     post([this, stall] {
         if (stalled_pc_ == 0u) return;
         ge_.set_list_callback(stalled_callback_);
-        if (ge_.run_list(stalled_pc_, stall)) {
+        if (run_guarded(stalled_pc_, stall)) {
             stalled_pc_ = 0u;
             completed_.store(stalled_id_);
         } else {
             stalled_pc_ = stall & 0x0FFFFFFFu;
         }
     });
+}
+
+// A list that runs off valid memory (Tekken 6 jumps through a bad address on
+// some frames) ends there, as the PSP's GE stops on a bus error, instead of
+// taking the worker thread down and leaving the game waiting forever.
+bool GeWorker::run_guarded(std::uint32_t list, std::uint32_t stall) {
+    try {
+        return ge_.run_list(list, stall);
+    } catch (const std::exception &e) {
+        if (!reported_bad_list_) std::cerr << "[ge] list at 0x" << std::hex << list << std::dec << " stopped: " << e.what() << "\n";
+        reported_bad_list_ = true;
+        return true;
+    }
 }
 
 bool GeWorker::done(std::uint32_t id) const noexcept {

@@ -71,6 +71,7 @@ void Kernel::install_devices() {
     hle("sceUmdUser", 0x46EBB729u, "sceUmdCheckMedium", &Kernel::sceUmdCheckMedium);
     hle("sceUmdUser", 0x6B4A146Cu, "sceUmdGetDriveStat", &Kernel::sceUmdGetDriveStat);
     hle("sceUmdUser", 0x340B7686u, "sceUmdGetDiscInfo", &Kernel::sceUmdGetDiscInfo);
+    hle("sceOpenPSID", 0xC69BEBCEu, "sceOpenPSIDGetOpenPSID", &Kernel::sceOpenPSIDGetOpenPSID);
     hle("sceUmdUser", 0xC6183D47u, "sceUmdActivate", &Kernel::return_zero);
     hle("sceUmdUser", 0x56202973u, "sceUmdWaitDriveStatWithTimer", &Kernel::return_zero);
     hle("sceUmdUser", 0x8EF08FCEu, "sceUmdWaitDriveStat", &Kernel::return_zero);
@@ -127,9 +128,17 @@ void Kernel::install_devices() {
     // Memory stick callbacks and folders need no work: the memory stick is a host folder.
     hle("IoFileMgrForUser", 0x54F5FB11u, "sceIoDevctl", &Kernel::return_zero);
     hle("IoFileMgrForUser", 0x06A70004u, "sceIoMkdir", &Kernel::return_zero);
-    hle("scePower", 0xEBD177D6u, "scePowerSetClockFrequency", &Kernel::return_zero);
-    hle("scePower", 0x469989ADu, "scePowerSetClockFrequency2", &Kernel::return_zero);
+    // Clocks are only remembered: games that change them wait until the getters agree (Tekken 6).
+    hle("scePower", 0x737486F2u, "scePowerSetClockFrequency", &Kernel::scePowerSetClockFrequency);
+    hle("scePower", 0xEBD177D6u, "scePowerSetClockFrequency", &Kernel::scePowerSetClockFrequency);
+    hle("scePower", 0x469989ADu, "scePowerSetClockFrequency2", &Kernel::scePowerSetClockFrequency);
+    hle("scePower", 0x843FBF43u, "scePowerSetCpuClockFrequency", &Kernel::scePowerSetCpuClockFrequency);
+    hle("scePower", 0xB8D7B3FBu, "scePowerSetBusClockFrequency", &Kernel::scePowerSetBusClockFrequency);
     hle("scePower", 0xFDB5BFE9u, "scePowerGetCpuClockFrequencyInt", &Kernel::scePowerGetCpuClockFrequencyInt);
+    hle("scePower", 0xFEE03A2Fu, "scePowerGetCpuClockFrequency", &Kernel::scePowerGetCpuClockFrequencyInt);
+    hle("scePower", 0xBD681969u, "scePowerGetBusClockFrequencyInt", &Kernel::scePowerGetBusClockFrequencyInt);
+    hle("scePower", 0x478FE6F5u, "scePowerGetBusClockFrequency", &Kernel::scePowerGetBusClockFrequencyInt);
+    hle("scePower", 0x34F9C463u, "scePowerGetPllClockFrequencyInt", &Kernel::scePowerGetPllClockFrequencyInt);
     // Firmware modules are all high-level emulated, so loading one is a no-op.
     hle("sceUtility", 0x2A2B3DE0u, "sceUtilityLoadModule", &Kernel::return_zero);
     hle("sceUtility", 0xE49BFE92u, "sceUtilityUnloadModule", &Kernel::return_zero);
@@ -357,6 +366,13 @@ void Kernel::sceAudioOutput2ChangeLength(Ctx &ctx) {
 
 void Kernel::sceUmdCheckMedium(Ctx &ctx) { finish(ctx, 1u); }
 void Kernel::sceUmdGetDriveStat(Ctx &ctx) { finish(ctx, 0x32u); } // present, ready, readable
+// A fixed console id (16 bytes); games only compare it with what they saved.
+void Kernel::sceOpenPSIDGetOpenPSID(Ctx &ctx) {
+    static constexpr std::uint8_t kId[16] = {0x10, 0x02, 0xA3, 0x44, 0x13, 0xF5, 0x93, 0xB0,
+                                             0xCC, 0x6E, 0xD1, 0x32, 0x27, 0x85, 0x0F, 0x9D};
+    for (std::uint32_t i = 0; ctx.gpr[4] != 0u && i < 16u; ++i) rt_.memory().store8(ctx.gpr[4] + i, kId[i]);
+    finish(ctx, 0u);
+}
 // pspUmdInfo {size, type}: a game disc
 void Kernel::sceUmdGetDiscInfo(Ctx &ctx) {
     if (ctx.gpr[4] != 0u) rt_.memory().store32(ctx.gpr[4] + 4u, 0x10u);
@@ -670,7 +686,23 @@ void Kernel::sceDmacMemcpy(Ctx &ctx) {
     finish(ctx, 0u);
 }
 
-void Kernel::scePowerGetCpuClockFrequencyInt(Ctx &ctx) { finish(ctx, 333u); }
+void Kernel::scePowerSetClockFrequency(Ctx &ctx) { // (pll, cpu, bus)
+    clock_pll_ = ctx.gpr[4];
+    clock_cpu_ = ctx.gpr[5];
+    clock_bus_ = ctx.gpr[6];
+    finish(ctx, 0u);
+}
+void Kernel::scePowerSetCpuClockFrequency(Ctx &ctx) {
+    clock_cpu_ = ctx.gpr[4];
+    finish(ctx, 0u);
+}
+void Kernel::scePowerSetBusClockFrequency(Ctx &ctx) {
+    clock_bus_ = ctx.gpr[4];
+    finish(ctx, 0u);
+}
+void Kernel::scePowerGetCpuClockFrequencyInt(Ctx &ctx) { finish(ctx, clock_cpu_); }
+void Kernel::scePowerGetBusClockFrequencyInt(Ctx &ctx) { finish(ctx, clock_bus_); }
+void Kernel::scePowerGetPllClockFrequencyInt(Ctx &ctx) { finish(ctx, clock_pll_); }
 
 // status 0 (normal) and zero counters; Dante's Inferno hangs unless status reads 0.
 void Kernel::sceKernelReferSystemStatus(Ctx &ctx) {
