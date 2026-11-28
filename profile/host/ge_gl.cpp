@@ -341,9 +341,31 @@ void GeGl::Rect::add(int ax0, int ay0, int ax1, int ay1) {
     x1 = std::max(x1, ax1); y1 = std::max(y1, ay1);
 }
 
+std::uint64_t GeGl::vram_page_hash(std::uint32_t page) const {
+    const std::uint8_t *p = memory_.raw_pointer(0x04000000u + page * 4096u, 4096u);
+    if (p == nullptr) return 0u;
+    std::uint64_t h = 1469598103934665603ull;
+    for (std::uint32_t i = 0; i < 4096u; i += 8u) {
+        std::uint64_t w;
+        std::memcpy(&w, p + i, 8u);
+        h = (h ^ w) * 1099511628211ull;
+    }
+    return h;
+}
+
 void GeGl::mark_drawn(Surface &s, const Rect &r) {
     const Rect c = r.clip(Rect{0, 0, static_cast<int>(s.stride) - 1, static_cast<int>(s.height) - 1});
     if (c.empty()) return;
+    {
+        const std::uint32_t rb = row_bytes(s);
+        const std::uint32_t first = (s.offset + static_cast<std::uint32_t>(c.y0) * rb) >> 12u;
+        const std::uint32_t last = std::min((s.offset + static_cast<std::uint32_t>(c.y1 + 1) * rb - 1u) >> 12u, 511u);
+        for (std::uint32_t page = first; page <= last; ++page) {
+            if (pending_page_[page]) continue;
+            pending_page_[page] = true;
+            pending_hash_[page] = vram_page_hash(page);
+        }
+    }
     s.content.add(c);
     s.gpu_dirty.add(c);
     if (s.rows.size() < s.height) s.rows.resize(s.height);
@@ -754,14 +776,18 @@ void GeGl::apply_pending_uploads(Surface &s) {
     for (const Rect &r : rects) upload_rect(s, r);
 }
 
-void GeGl::download(Surface &s) {
+void GeGl::download(Surface &s, int first_row, int last_row) {
     apply_pending_uploads(s); // VRAM is newer there; keep it
     resolve_alpha(s, s.gpu_dirty);
     std::uint8_t *vram = memory_.raw_pointer(0x04000000u, kVramSize);
-    const Rect r = s.gpu_dirty.clip(Rect{0, 0, static_cast<int>(s.stride) - 1, static_cast<int>(s.height) - 1});
-    s.gpu_dirty = Rect{};
+    // Only the rows asked for: the rest of VRAM may hold newer CPU data (Tekken 6
+    // writes display lists over a framebuffer it drew earlier).
+    const Rect r = s.gpu_dirty.clip(Rect{0, std::max(first_row, 0), static_cast<int>(s.stride) - 1,
+                                         std::min(last_row, static_cast<int>(s.height) - 1)});
+    if (first_row <= 0 && last_row >= static_cast<int>(s.height) - 1) s.gpu_dirty = Rect{};
     std::vector<std::pair<int, int>> spans(s.rows.size(), {0, -1});
     for (std::size_t y = 0; y < s.rows.size(); ++y) {
+        if (static_cast<int>(y) < r.y0 || static_cast<int>(y) > r.y1) continue;
         spans[y] = {s.rows[y].dx0, s.rows[y].dx1};
         s.rows[y].dx0 = 0;
         s.rows[y].dx1 = -1;
@@ -786,6 +812,16 @@ void GeGl::download(Surface &s) {
         glReadPixels(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h), GL_RGBA, GL_UNSIGNED_BYTE, pixels_.data());
     }
     const std::uint32_t bpp = bpp_of(s.format);
+    std::vector<std::uint8_t> cpu_newer(512u, 0u);
+    {
+        const std::uint32_t first = (s.offset + y0 * s.stride * bpp) >> 12u;
+        const std::uint32_t last = std::min((s.offset + (y0 + h) * s.stride * bpp - 1u) >> 12u, 511u);
+        for (std::uint32_t page = first; page <= last; ++page) {
+            cpu_newer[page] = pending_page_[page] && vram_page_hash(page) != pending_hash_[page];
+            // The CPU owns the page now: drop every surface's pending pixels there.
+            if (cpu_newer[page]) forget_gpu_pixels(0x04000000u + page * 4096u, 4096u);
+        }
+    }
     for (std::uint32_t y = 0; y < h; ++y) {
         const auto &span = spans[y0 + y];
         for (std::uint32_t x = 0; x < w; ++x) {
@@ -793,6 +829,7 @@ void GeGl::download(Surface &s) {
             if (px < span.first || px > span.second) continue; // only pixels the GPU drew
             const std::uint32_t at = s.offset + ((y0 + y) * s.stride + x0 + x) * bpp;
             if (at + bpp > kVramSize) break;
+            if (cpu_newer[at >> 12u]) continue;
             std::uint32_t rgba;
             std::memcpy(&rgba, &pixels_[(static_cast<std::size_t>(y) * w + x) * 4u], 4u);
             if (bpp == 4u) {
@@ -803,6 +840,11 @@ void GeGl::download(Surface &s) {
                 vram[at + 1u] = static_cast<std::uint8_t>(packed >> 8u);
             }
         }
+    }
+    {
+        const std::uint32_t first = (s.offset + y0 * s.stride * bpp) >> 12u;
+        const std::uint32_t last = std::min((s.offset + (y0 + h) * s.stride * bpp - 1u) >> 12u, 511u);
+        for (std::uint32_t page = first; page <= last; ++page) pending_page_[page] = false; // VRAM is current again
     }
     if (vram_write_hook_) vram_write_hook_(0x04000000u + s.offset + y0 * s.stride * bpp, h * s.stride * bpp);
     cache_.fbo = ~0u;
@@ -1068,6 +1110,25 @@ bool GeGl::batch_uses(const Surface &s) const {
     return state_.tex_from_target && locate(s, vram_offset(state_.tex_address), ox, oy);
 }
 
+// The GE is about to run commands from this VRAM range: the CPU wrote them
+// after any drawing there, so drawn pixels not yet written back are stale.
+void GeGl::forget_gpu_pixels(std::uint32_t address, std::uint32_t bytes) {
+    const std::uint32_t offset = vram_offset(address);
+    if (offset == kNotVram) return;
+    for (auto &s : surfaces_) {
+        if (!s.alive || s.gpu_dirty.empty()) continue;
+        const std::uint32_t rb = row_bytes(s);
+        const std::uint32_t end = s.offset + static_cast<std::uint32_t>(s.rows.size()) * rb;
+        if (offset >= end || offset + bytes <= s.offset) continue;
+        const std::uint32_t first = offset > s.offset ? (offset - s.offset) / rb : 0u;
+        const std::uint32_t last = (std::min(offset + bytes, end) - 1u - s.offset) / rb;
+        for (std::uint32_t y = first; y <= last && y < s.rows.size(); ++y) {
+            s.rows[y].dx0 = 0;
+            s.rows[y].dx1 = -1;
+        }
+    }
+}
+
 bool GeGl::prepare_vram_read(std::uint32_t address, std::uint32_t bytes) {
     const std::uint32_t offset = vram_offset(address);
     if (offset == kNotVram) return false;
@@ -1079,7 +1140,9 @@ bool GeGl::prepare_vram_read(std::uint32_t address, std::uint32_t bytes) {
         const std::uint32_t end = s.offset + static_cast<std::uint32_t>(s.gpu_dirty.y1 + 1) * rb;
         if (offset < end && begin < offset + bytes) {
             if (batch_uses(s)) flush();
-            download(s);
+            const int first = offset > s.offset ? static_cast<int>((offset - s.offset) / rb) : 0;
+            const int last = static_cast<int>((std::min(offset + bytes, end) - 1u - s.offset) / rb);
+            download(s, first, last);
             downloaded = true;
         }
     }
@@ -1465,6 +1528,7 @@ void GeGl::flush() {
             }
         }
         current_->last_draw = ++draw_sequence_;
+        current_->drawn_frame = presents_;
     }
     // Each draw re-specifies the vertex buffer (orphaning) and gets an index
     // buffer of its own from a rotating pool.  Writing into a buffer the GPU may
@@ -1545,6 +1609,13 @@ void GeGl::after_transfer(const TransferRect &dst) {
 void GeGl::present(std::uint32_t fb_address, std::uint32_t stride, std::uint32_t format,
                    GLuint out_fbo, int out_width, int out_height) {
     flush();
+    // A surface the game stopped drawing into gets its pixels written to VRAM
+    // now, as the PSP would have while drawing: left pending, they would later
+    // land over whatever the CPU put there since (Tekken 6 keeps display lists
+    // where its 32-bit loading screen was).
+    ++presents_;
+    for (auto &old : surfaces_)
+        if (old.alive && !old.gpu_dirty.empty() && presents_ - old.drawn_frame > 2u) download(old);
     reset_cache(); // the code below drives GL directly
     constexpr std::uint32_t width = 480u, height = 272u;
     GLuint texture = 0u;

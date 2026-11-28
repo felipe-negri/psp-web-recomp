@@ -1650,7 +1650,9 @@ void Kernel::sceGeDrawSync(Ctx &ctx) {
     } else if (ctx.gpr[4] == 1u) {
         finish(ctx, kGeListDrawing);
     } else {
-        current()->wait_count = 0u;
+        // The lists queued so far: one queued later by another thread (a loading
+        // screen's spinner, in Tekken 6) must not keep this wait from ending.
+        current()->wait_count = ge_worker_->newest();
         block(ctx, WaitType::Ge, kGeListCompleted);
     }
 }

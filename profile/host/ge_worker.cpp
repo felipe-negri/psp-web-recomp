@@ -3,6 +3,7 @@
 #include "ge.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <iostream>
 #include <thread>
 
